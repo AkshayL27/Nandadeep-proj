@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hospital Server</title>
+<style>body{font-family:sans-serif;padding:20px;background:#f0f0f0}.card{background:white;padding:15px;margin-bottom:15px;border-radius:8px;box-shadow:0 2px 5px rgba(0,0,0,0.1)}input,select,button{width:100%;padding:10px;margin-top:5px;box-sizing:border-box}button{border:none;border-radius:5px;color:white;font-weight:bold;cursor:pointer}.btn-start{background:#28a745}.btn-stop{background:#dc3545}</style>
+</head>
+<body>
+<h2>Control Panel</h2>
+<div class="card">
+<h3>1. Select Camera</h3>
+<select id="nodeSelect"><option>Loading...</option></select>
+<button onclick="refreshNodes()" style="background:#007bff;margin-top:10px">Refresh List</button>
+</div>
+<div class="card">
+<h3>2. Session Info</h3>
+<input type="text" id="docName" placeholder="Doctor Name">
+</div>
+<div class="card">
+<button class="btn-start" onclick="control('start')">START RECORDING</button><br><br>
+<button class="btn-stop" onclick="control('stop')">STOP RECORDING</button>
+</div>
+<script>
+function refreshNodes(){fetch('/api/nodes').then(r=>r.json()).then(d=>{const s=document.getElementById('nodeSelect');s.innerHTML='';d.forEach(n=>{let o=document.createElement('option');o.value=n.id;o.text=n.id+' ('+n.ip+')';s.add(o)});if(d.length===0)s.innerHTML='<option>No cameras found</option>'})}
+function control(a){
+    const d=document.getElementById('docName').value;
+    const id=document.getElementById('nodeSelect').value;
+    if(!d){alert('Enter Doctor Name');return}
+    
+    if(a === 'stop' && !confirm("Are you sure you want to stop recording?")) return;
+
+    fetch(`/api/${a}?doc=${d}&id=${id}`)
+    .then(async r => { if(r.ok) alert(a.toUpperCase()+' Sent!'); else alert('Error: ' + await r.text()); })
+}
+refreshNodes();
+</script>
+</body>
+</html>
