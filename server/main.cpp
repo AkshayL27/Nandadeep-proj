@@ -9,6 +9,11 @@
 #include <cstring>
 #include <algorithm>
 #include "Logger.hpp"
+#include <vector>
+#include <queue>
+#include <functional>
+#include <condition_variable>
+#include <csignal>
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -111,6 +116,130 @@ void discovery_listener() {
     }
 }
 
+void handle_http_client(int new_socket) {
+    char buffer[4096] = {0};
+    recv(new_socket, buffer, 4096, 0); // recv works on both Windows and Linux
+    std::string request(buffer);
+    std::string response;
+
+    // --- API: Get List of Nodes ---
+    if (request.find("GET /api/nodes") != std::string::npos) {
+        auto nodes = sessionMgr.get_active_observers();
+        std::stringstream json;
+        json << "[";
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            json << "{\"id\":\"" << nodes[i].id << "\", \"ip\":\"" << nodes[i].ip_address << "\"}";
+            if (i < nodes.size() - 1) json << ",";
+        }
+        json << "]";
+        std::string body = json.str();
+        response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.length()) + "\r\n\r\n" + body;
+    }
+    // --- API: Start Recording ---
+    else if (request.find("GET /api/start") != std::string::npos) {
+        // Parse: /api/start?doc=Name&id=CameraID
+        std::string doc = "Unknown";
+        std::string cam_id = "";
+        int port = -1; // Default to invalid to ensure we find a registered camera
+        
+        size_t docPos = request.find("doc=");
+        if (docPos != std::string::npos) {
+            size_t end = request.find("&", docPos);
+            if (end == std::string::npos) end = request.find(" ", docPos);
+            doc = request.substr(docPos + 4, end - (docPos + 4));
+        }
+        size_t idPos = request.find("id=");
+        if (idPos != std::string::npos) {
+            size_t end = request.find(" ", idPos);
+            cam_id = request.substr(idPos + 3, end - (idPos + 3));
+            std::lock_guard<std::mutex> lock(node_ports_mutex);
+            if (node_ports.count(cam_id)) port = node_ports[cam_id];
+        }
+
+        if (port != -1) {
+            sessionMgr.start_session(doc);
+            engine.start_recording(doc, port);
+            response = "HTTP/1.1 200 OK\r\n\r\nStarted";
+        } else {
+            Logger::error("Web API: Failed to start. Camera ID '" + cam_id + "' not found.");
+            response = "HTTP/1.1 400 Bad Request\r\n\r\nError: Camera not found. Please refresh list.";
+        }
+    }
+    // --- API: Stop Recording ---
+    else if (request.find("GET /api/stop") != std::string::npos) {
+        std::string doc = "Unknown";
+        size_t docPos = request.find("doc=");
+        if (docPos != std::string::npos) {
+            size_t end = request.find(" ", docPos);
+            doc = request.substr(docPos + 4, end - (docPos + 4));
+        }
+
+        if (sessionMgr.is_recording_active()) {
+            sessionMgr.stop_session();
+            engine.stop_recording(doc);
+            response = "HTTP/1.1 200 OK\r\n\r\nStopped";
+        } else {
+            response = "HTTP/1.1 400 Bad Request\r\n\r\nError: No active recording to stop.";
+        }
+    }
+    // --- Serve HTML Page ---
+    else {
+        std::ifstream file("index.html");
+        if (!file.is_open()) {
+            // Fallback: Try parent directory (useful if running from build/ folder)
+            file.open("../index.html");
+        }
+
+        if (file.is_open()) {
+            std::stringstream buffer;
+            buffer << file.rdbuf();
+            std::string html = buffer.str();
+            response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(html.length()) + "\r\n\r\n" + html;
+        } else {
+            std::string msg = "404 Not Found: index.html missing. Please place it next to the executable.";
+            response = "HTTP/1.1 404 Not Found\r\nContent-Length: " + std::to_string(msg.length()) + "\r\n\r\n" + msg;
+        }
+    }
+
+    send(new_socket, response.c_str(), response.length(), 0);
+    close(new_socket);
+}
+
+// Simple ThreadPool to prevent creating too many threads
+class ThreadPool {
+    std::vector<std::thread> workers;
+    std::queue<std::function<void()>> tasks;
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    bool stop = false;
+public:
+    ThreadPool(size_t threads) {
+        for(size_t i = 0; i < threads; ++i)
+            workers.emplace_back([this] {
+                while(true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
+                        this->condition.wait(lock, [this]{ return this->stop || !this->tasks.empty(); });
+                        if(this->stop && this->tasks.empty()) return;
+                        task = std::move(this->tasks.front());
+                        this->tasks.pop();
+                    }
+                    task();
+                }
+            });
+    }
+    ~ThreadPool() {
+        { std::unique_lock<std::mutex> lock(queue_mutex); stop = true; }
+        condition.notify_all();
+        for(std::thread &worker: workers) worker.join();
+    }
+    void enqueue(std::function<void()> task) {
+        { std::unique_lock<std::mutex> lock(queue_mutex); tasks.push(task); }
+        condition.notify_one();
+    }
+};
+
 void web_server() {
     int server_fd, new_socket;
     struct sockaddr_in address;
@@ -142,95 +271,14 @@ void web_server() {
 
     Logger::info("[Web] Control Panel running at http://<server_ip>:8080");
 
+    // Auto-detect CPU cores to size the pool efficiently (Min 4 threads)
+    unsigned int cores = std::thread::hardware_concurrency();
+    ThreadPool pool(cores > 0 ? cores : 4);
+
     while (true) {
         if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) continue;
 
-        char buffer[4096] = {0};
-        recv(new_socket, buffer, 4096, 0); // recv works on both Windows and Linux
-        std::string request(buffer);
-        std::string response;
-
-        // --- API: Get List of Nodes ---
-        if (request.find("GET /api/nodes") != std::string::npos) {
-            auto nodes = sessionMgr.get_active_observers();
-            std::stringstream json;
-            json << "[";
-            for (size_t i = 0; i < nodes.size(); ++i) {
-                json << "{\"id\":\"" << nodes[i].id << "\", \"ip\":\"" << nodes[i].ip_address << "\"}";
-                if (i < nodes.size() - 1) json << ",";
-            }
-            json << "]";
-            std::string body = json.str();
-            response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + std::to_string(body.length()) + "\r\n\r\n" + body;
-        }
-        // --- API: Start Recording ---
-        else if (request.find("GET /api/start") != std::string::npos) {
-            // Parse: /api/start?doc=Name&id=CameraID
-            std::string doc = "Unknown";
-            std::string cam_id = "";
-            int port = -1; // Default to invalid to ensure we find a registered camera
-            
-            size_t docPos = request.find("doc=");
-            if (docPos != std::string::npos) {
-                size_t end = request.find("&", docPos);
-                if (end == std::string::npos) end = request.find(" ", docPos);
-                doc = request.substr(docPos + 4, end - (docPos + 4));
-            }
-            size_t idPos = request.find("id=");
-            if (idPos != std::string::npos) {
-                size_t end = request.find(" ", idPos);
-                cam_id = request.substr(idPos + 3, end - (idPos + 3));
-                std::lock_guard<std::mutex> lock(node_ports_mutex);
-                if (node_ports.count(cam_id)) port = node_ports[cam_id];
-            }
-
-            if (port != -1) {
-                sessionMgr.start_session(doc);
-                engine.start_recording(doc, port);
-                response = "HTTP/1.1 200 OK\r\n\r\nStarted";
-            } else {
-                Logger::error("Web API: Failed to start. Camera ID '" + cam_id + "' not found.");
-                response = "HTTP/1.1 400 Bad Request\r\n\r\nError: Camera not found. Please refresh list.";
-            }
-        }
-        // --- API: Stop Recording ---
-        else if (request.find("GET /api/stop") != std::string::npos) {
-            std::string doc = "Unknown";
-            size_t docPos = request.find("doc=");
-            if (docPos != std::string::npos) {
-                size_t end = request.find(" ", docPos);
-                doc = request.substr(docPos + 4, end - (docPos + 4));
-            }
-
-            if (sessionMgr.is_recording_active()) {
-                sessionMgr.stop_session();
-                engine.stop_recording(doc);
-                response = "HTTP/1.1 200 OK\r\n\r\nStopped";
-            } else {
-                response = "HTTP/1.1 400 Bad Request\r\n\r\nError: No active recording to stop.";
-            }
-        }
-        // --- Serve HTML Page ---
-        else {
-            std::ifstream file("index.html");
-            if (!file.is_open()) {
-                // Fallback: Try parent directory (useful if running from build/ folder)
-                file.open("../index.html");
-            }
-
-            if (file.is_open()) {
-                std::stringstream buffer;
-                buffer << file.rdbuf();
-                std::string html = buffer.str();
-                response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " + std::to_string(html.length()) + "\r\n\r\n" + html;
-            } else {
-                std::string msg = "404 Not Found: index.html missing. Please place it next to the executable.";
-                response = "HTTP/1.1 404 Not Found\r\nContent-Length: " + std::to_string(msg.length()) + "\r\n\r\n" + msg;
-            }
-        }
-
-        send(new_socket, response.c_str(), response.length(), 0);
-        close(new_socket);
+        pool.enqueue([new_socket] { handle_http_client(new_socket); });
     }
 }
 
@@ -243,6 +291,11 @@ int main() {
         Logger::error("WSAStartup failed");
         return 1;
     }
+    #endif
+
+    // Prevent server crash on Linux if a client disconnects abruptly
+    #ifndef _WIN32
+    std::signal(SIGPIPE, SIG_IGN);
     #endif
 
     // 1. Initialize Engine
