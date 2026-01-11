@@ -1,1 +1,6 @@
-/**/build/**
+server/video_server
+server/video_server.exe
+server/recordings/
+*.o
+*.obj
+*.swp

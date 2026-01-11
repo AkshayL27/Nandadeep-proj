@@ -34,7 +34,7 @@ void StreamEngine::init() {
     // Input: Expecting H264 UDP stream from Pi on Port 5000
     // Output: RTSP Clients connect to this server
     std::string launch_cmd = 
-        "( udpsrc port=5000 multicast-group=224.1.1.1 auto-multicast=true buffer-size=10000000 do-timestamp=true ! application/x-rtp, encoding-name=H264, payload=96 ! "
+        "( udpsrc port=5000 multicast-group=239.0.0.1 auto-multicast=true buffer-size=10000000 do-timestamp=true ! application/x-rtp, encoding-name=H264, payload=96 ! "
         "rtph264depay ! h264parse ! rtph264pay name=pay0 pt=96 )";
         
     gst_rtsp_media_factory_set_launch(factory, launch_cmd.c_str());
@@ -83,7 +83,7 @@ void StreamEngine::start_recording(const std::string& doctor_name, int port) {
     // Pipeline: Listen UDP -> Parse -> Mux -> File
     // We use 'matroskamux' (MKV) because it is resilient to power failure.
     std::string pipeline_str = 
-        "udpsrc port=" + std::to_string(port) + " multicast-group=224.1.1.1 buffer-size=10000000 do-timestamp=true ! application/x-rtp, encoding-name=H264 ! "
+        "udpsrc port=" + std::to_string(port) + " multicast-group=239.0.0.1 buffer-size=10000000 do-timestamp=true ! application/x-rtp, encoding-name=H264 ! "
         "rtph264depay ! h264parse ! matroskamux ! filesink location=" + filename;
 
     GError* error = nullptr;
