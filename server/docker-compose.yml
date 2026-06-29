@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  nandadeep-linux:
+    build:
+      context: .
+      dockerfile: Dockerfile.linux
+    image: nandadeep-linux:latest
+    ports:
+      - "8554:8554"
+    volumes:
+      - ./recordings:/app/server/recordings
+    # Optionally uncomment to run in background:
+    # command: ["./VideoServer"]
+
+  nandadeep-windows:
+    build:
+      context: .
+      dockerfile: Dockerfile.windows
+    image: nandadeep-windows:latest
+    ports:
+      - "8555:8554"  # Mapped to a different port to avoid conflicts if both run at same time
+    volumes:
+      - ./recordings_windows:/app/server/recordings
+    # Note: running Wine might have some quirks in Docker. 
+    # Use 'docker compose run --rm nandadeep-windows' to test interactively.

@@ -1,0 +1,68 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install cross-compilation toolchain, Wine, and other necessary tools
+RUN dpkg --add-architecture i386 && \
+    apt-get update && apt-get install -y \
+    mingw-w64 \
+    wine64 \
+    wine32 \
+    cmake \
+    pkg-config \
+    wget \
+    xz-utils \
+    git \
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up Wine environment variables to avoid graphical prompts during setup
+ENV WINEARCH=win64
+ENV WINEDEBUG=-all
+
+# Download and extract GStreamer MinGW binaries for Windows cross-compilation
+# We use version 1.22.9 as a stable recent version
+ENV GST_VERSION=1.22.9
+WORKDIR /opt
+RUN wget -q https://gstreamer.freedesktop.org/data/pkg/windows/${GST_VERSION}/mingw-x86_64/gstreamer-1.0-devel-mingw-x86_64-${GST_VERSION}.tar.xz && \
+    wget -q https://gstreamer.freedesktop.org/data/pkg/windows/${GST_VERSION}/mingw-x86_64/gstreamer-1.0-mingw-x86_64-${GST_VERSION}.tar.xz && \
+    tar -xf gstreamer-1.0-devel-mingw-x86_64-${GST_VERSION}.tar.xz -C /opt && \
+    tar -xf gstreamer-1.0-mingw-x86_64-${GST_VERSION}.tar.xz -C /opt && \
+    rm *.tar.xz
+
+# Fix up the pkg-config prefix in the GStreamer .pc files
+# GStreamer's default prefix is usually something like c:/gstreamer/...
+# We need to rewrite it to /opt/1.0/mingw_x86_64 so pkg-config works on Linux
+RUN find /opt/1.0/mingw_x86_64/lib/pkgconfig -name '*.pc' -exec sed -i "s|^prefix=.*|prefix=/opt/1.0/mingw_x86_64|" {} +
+
+# Set pkg-config environment to use the Windows cross-compiled libraries
+ENV PKG_CONFIG_LIBDIR=/opt/1.0/mingw_x86_64/lib/pkgconfig
+ENV PKG_CONFIG_SYSROOT_DIR=/
+
+# Configure Wine to find the DLLs so we can run the resulting executable
+# We pass the unix path in WINEPATH or convert it. Wine 6+ supports UNIX paths in WINEPATH.
+ENV WINEPATH="Z:\\opt\\1.0\\mingw_x86_64\\bin;Z:\\opt\\1.0\\mingw_x86_64\\lib"
+
+WORKDIR /app
+COPY . /app/server
+
+# Create a CMake toolchain file for MinGW cross-compilation
+RUN echo 'set(CMAKE_SYSTEM_NAME Windows)\n\
+set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)\n\
+set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)\n\
+set(CMAKE_RC_COMPILER x86_64-w64-mingw32-windres)\n\
+set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32 /opt/1.0/mingw_x86_64)\n\
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n\
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)\n\
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)\n\
+' > /app/Toolchain-mingw64.cmake
+
+# Build the application
+WORKDIR /app/server/build
+RUN cmake -DCMAKE_TOOLCHAIN_FILE=/app/Toolchain-mingw64.cmake .. && make -j$(nproc)
+
+# Expose RTSP port
+EXPOSE 8554
+
+# Run the Windows executable using Wine
+CMD ["wine", "VideoServer.exe"]

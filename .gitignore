@@ -1,6 +1,51 @@
+# ── Binaries ──────────────────────────────────────────────
 server/video_server
 server/video_server.exe
+*.out
+*.exe
+*.a
+*.so
+*.so.*
+*.dll
+*.lib
+
+# ── Build directories ─────────────────────────────────────
+build/
+server/build/
+/build/
+
+# ── CMake generated files ─────────────────────────────────
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+*.cmake
+!CMakeLists.txt
+
+# ── Runtime artifacts ─────────────────────────────────────
 server/recordings/
+recordings/
+*.log
+
+# ── Compiler intermediates ────────────────────────────────
 *.o
 *.obj
+*.d
+
+# ── Editor / IDE ──────────────────────────────────────────
+.vscode/*
 *.swp
+*.swo
+*~
+
+# ── Cache ─────────────────────────────────────────────────
+.cache/
+.cmake/
+
+# ── OS artifacts ──────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Docker ────────────────────────────────────────────────
+.dockerignore

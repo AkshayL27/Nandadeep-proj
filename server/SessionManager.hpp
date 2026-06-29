@@ -1,12 +1,14 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <shared_mutex>
 #include <mutex>
+#include <unordered_map>
 #include <iostream>
 
 struct ObserverNode {
-    std::string id;
     std::string ip_address;
+    std::string session_name; // Track which doctor/session this camera is recording for
     bool is_online;
 };
 
@@ -23,11 +25,12 @@ public:
 
     // Node Management
     void register_node(const std::string& id, const std::string& ip);
-    std::vector<ObserverNode> get_active_observers();
+    void set_session_for_node(const std::string& node_id, const std::string& session_name);
+    std::vector<std::pair<std::string, ObserverNode>> get_active_observers();
 
 private:
-    std::mutex session_mutex;
+    mutable std::shared_mutex session_mutex;
     std::string current_doctor;
     bool recording_active;
-    std::vector<ObserverNode> observers;
+    std::unordered_map<std::string, ObserverNode> observers;
 };

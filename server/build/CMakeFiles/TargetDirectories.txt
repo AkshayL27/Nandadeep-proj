@@ -1,3 +1,0 @@
-/home/akshay/Nandadeep/server/build/CMakeFiles/VideoServer.dir
-/home/akshay/Nandadeep/server/build/CMakeFiles/edit_cache.dir
-/home/akshay/Nandadeep/server/build/CMakeFiles/rebuild_cache.dir
